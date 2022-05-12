@@ -17,6 +17,7 @@ use League\OAuth2\Server\Repositories\RefreshTokenRepositoryInterface;
 use League\OAuth2\Server\RequestTypes\AuthorizationRequest;
 use League\OAuth2\Server\ResponseTypes\ResponseTypeInterface;
 use Psr\Http\Message\ServerRequestInterface;
+use RuntimeException;
 
 class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
 {
@@ -189,7 +190,13 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
             $this->accessTokenRepository->storeClaims($accessToken, $authCodePayload->claims);
         }
 
-        // TODO: populate idToken with claims ...
+        $provider = config('auth.guards.api.provider');
+        if (is_null($model = config('auth.providers.' . $provider . '.model'))) {
+            throw new RuntimeException('Unable to determine authentication model from configuration.');
+        }
+        $user = (new $model)->findForPassport($authCodePayload->user_id);
+
+        $idToken->addExtra('email', $user->email);
         /**
          * @var \Idaas\OpenID\SessionInformation
          */
