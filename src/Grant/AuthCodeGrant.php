@@ -47,8 +47,7 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
         ClaimRepositoryInterface $claimRepository,
         Session $session,
         \DateInterval $authCodeTTL,
-        \DateInterval $idTokenTTL,
-        $disableRequireCodeChallengeForPublicClients = true
+        \DateInterval $idTokenTTL
     ) {
         parent::__construct($authCodeRepository, $refreshTokenRepository, $authCodeTTL);
 
@@ -57,10 +56,7 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
         $this->authCodeTTL = $authCodeTTL;
         $this->idTokenTTL = $idTokenTTL;
         $this->session = $session;
-
-        if ($disableRequireCodeChallengeForPublicClients) {
-            $this->disableRequireCodeChallengeForPublicClients();
-        }
+        
     }
 
     public function getIdentifier()
