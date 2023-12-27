@@ -2,16 +2,18 @@
 
 namespace Idaas\OpenID\Grant;
 
-use DateTimeImmutable;
 use Idaas\OpenID\Entities\IdToken;
+use Idaas\OpenID\IdTokenEvent;
 use Idaas\OpenID\Repositories\ClaimRepositoryInterface;
 use Idaas\OpenID\Repositories\UserRepositoryInterface;
 use Idaas\OpenID\RequestTypes\AuthenticationRequest;
-use Idaas\OpenID\Session;
+use Idaas\OpenID\SessionInterface;
 use League\OAuth2\Server\Entities\UserEntityInterface;
 use League\OAuth2\Server\Exception\OAuthServerException;
+use League\OAuth2\Server\Repositories\AccessTokenRepositoryInterface;
 use League\OAuth2\Server\RequestTypes\AuthorizationRequest;
 use League\OAuth2\Server\ResponseTypes\RedirectResponse;
+use League\OAuth2\Server\ResponseTypes\ResponseTypeInterface;
 use Psr\Http\Message\ServerRequestInterface;
 
 class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
@@ -30,12 +32,24 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
     protected $claimRepositoryInterface;
 
     /**
+     * @var SessionInterface
+     */
+    protected $session;
+
+    /**
+     * Same as $accessTokenTTL, but used for the ID Token
+     * @var \DateInterval
+     */
+    protected $accessTokenTTLCopy;
+
+    /**
      * @param \DateInterval $accessTokenTTL
      * @param string $queryDelimiter
      */
     public function __construct(
         UserRepositoryInterface $userRepository,
         ClaimRepositoryInterface $claimRepositoryInterface,
+        SessionInterface $session,
         \DateInterval $accessTokenTTL,
         \DateInterval $idTokenTTL,
         $queryDelimiter = '#'
@@ -44,21 +58,26 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
 
         $this->userRepository = $userRepository;
         $this->claimRepositoryInterface = $claimRepositoryInterface;
+        $this->session = $session;
 
-        $this->accessTokenTTL = $accessTokenTTL;
+        $this->accessTokenTTLCopy = $accessTokenTTL;
         $this->idTokenTTL = $idTokenTTL;
         $this->queryDelimiter = $queryDelimiter;
     }
 
-    public function getIdentifier()
+    public function getIdentifier(): string
     {
         return 'implicit_oidc';
     }
 
-    public function canRespondToAuthorizationRequest(ServerRequestInterface $request)
+    public function canRespondToAuthorizationRequest(ServerRequestInterface $request): bool
     {
         $result = (isset($request->getQueryParams()['response_type'])
-            && ($request->getQueryParams()['response_type'] === 'id_token token' || $request->getQueryParams()['response_type'] === 'id_token' || $request->getQueryParams()['response_type'] === 'token')
+            && (
+                $request->getQueryParams()['response_type'] === 'id_token token' ||
+                $request->getQueryParams()['response_type'] === 'id_token' ||
+                $request->getQueryParams()['response_type'] === 'token'
+            )
             && isset($request->getQueryParams()['client_id']));
 
         $queryParams = $request->getQueryParams();
@@ -67,7 +86,7 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
         return $result && ($scopes && in_array('openid', explode(' ', $scopes)));
     }
 
-    public function validateAuthorizationRequest(ServerRequestInterface $request)
+    public function validateAuthorizationRequest(ServerRequestInterface $request): AuthorizationRequest
     {
         $result = parent::validateAuthorizationRequest($request);
 
@@ -76,7 +95,7 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
         $result->setResponseType($this->getQueryStringParameter('response_type', $request));
         $result->setResponseMode($this->getQueryStringParameter('response_mode', $request));
 
-        $nonce = $this->getQueryStringParameter('nonce', $request);
+        $nonce = $this->getQueryStringParameter('nonce', $request, '');
 
         //In OIDC, a nonce is required for the implicit flow
         if (strlen($nonce) == 0) {
@@ -116,10 +135,15 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
             $result->setAcrValues(explode(' ', $acrValues));
         }
 
+        $claims = $this->getQueryStringParameter('claims', $request);
+        $result->setClaims(
+            $this->claimRepositoryInterface->claimsRequestToEntities($claims ? json_decode($claims, true) : null)
+        );
+
         return $result;
     }
 
-    public function completeAuthorizationRequest(AuthorizationRequest $authorizationRequest)
+    public function completeAuthorizationRequest(AuthorizationRequest $authorizationRequest): ResponseTypeInterface
     {
         if (!($authorizationRequest instanceof AuthenticationRequest)) {
             throw OAuthServerException::invalidRequest('not possible');
@@ -134,7 +158,7 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
         // The user approved the client, redirect them back with an access token
         if ($authorizationRequest->isAuthorizationApproved() === true) {
             $accessToken = $this->issueAccessToken(
-                $this->accessTokenTTL,
+                $this->accessTokenTTLCopy,
                 $authorizationRequest->getClient(),
                 $authorizationRequest->getUser()->getIdentifier(),
                 $authorizationRequest->getScopes()
@@ -142,18 +166,20 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
 
             $idToken = new IdToken();
 
+            $issuedAt = new \DateTimeImmutable();
             $idToken->setIssuer($this->issuer);
             $idToken->setSubject($authorizationRequest->getUser()->getIdentifier());
             $idToken->setAudience($authorizationRequest->getClient()->getIdentifier());
-            $idToken->setExpiration(DateTimeImmutable::createFromMutable((new \DateTime())->add($this->idTokenTTL))) ;
-            $idToken->setIat(new \DateTimeImmutable());
-            // FIXME: this only works for Laravel
-            $idToken->setAuthTime(resolve(Session::class)->getAuthTime());
+            $idToken->setExpiration($issuedAt->add($this->idTokenTTL));
+            $idToken->setIat($issuedAt);
+            $idToken->setAuthTime($this->session->getAuthTime());
             $idToken->setNonce($authorizationRequest->getNonce());
+            $idToken->setIdentifier($this->generateUniqueIdentifier());
+
+            $claimsRequested = $authorizationRequest->getClaims();
 
             // If there is no access token returned, include the supported claims
             if ($authorizationRequest->getResponseType() == 'id_token') {
-                $claimsRequested = [];
                 $scopes = [];
 
                 foreach ($authorizationRequest->getScopes() as $scope) {
@@ -163,6 +189,7 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
                     );
                     if (count($claims) > 0) {
                         array_push($claimsRequested, ...$claims);
+                        $scopes[] = $scope;
                     }
                 }
 
@@ -175,6 +202,11 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
                 foreach ($attributes as $key => $value) {
                     $idToken->addExtra($key, $value);
                 }
+            } else {
+                // This check is not really needed, as accessTokenRepisitory is guaranted to be of this type
+                if ($this->accessTokenRepository instanceof \Idaas\OpenID\Repositories\AccessTokenRepositoryInterface) {
+                    $this->accessTokenRepository->storeClaims($accessToken, $claimsRequested);
+                }
             }
 
             /**
@@ -186,11 +218,16 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
             $idToken->setAmr($sessionInformation->getAmr());
             $idToken->setAzp($sessionInformation->getAzp());
 
+            $this->getEmitter()->emit(new IdTokenEvent(IdTokenEvent::TOKEN_POPULATED, $idToken, $this));
+
             $parameters = [];
 
             //Only add the access token and related parameters if requested
             //TODO: Check if OpenID Connect flow is allowed if only a token is requested.
-            if ($authorizationRequest->getResponseType() == 'id_token token' || $authorizationRequest->getResponseType() == 'token') {
+            if (
+                $authorizationRequest->getResponseType() == 'id_token token' ||
+                $authorizationRequest->getResponseType() == 'token'
+            ) {
                 $accessToken->setPrivateKey($this->privateKey);
                 $parameters['access_token'] = (string) $accessToken;
                 $parameters['token_type'] = 'Bearer';
@@ -222,5 +259,14 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
                 ]
             )
         );
+    }
+
+    public function setAccessTokenRepository(AccessTokenRepositoryInterface $accessTokenRepository)
+    {
+        if (!($accessTokenRepository instanceof \Idaas\OpenID\Repositories\AccessTokenRepositoryInterface)) {
+            throw new \LogicException('The access token repository must be an instance of Idaas\OpenID\Repositories\AccessTokenRepositoryInterface');
+        }
+
+        $this->accessTokenRepository = $accessTokenRepository;
     }
 }
