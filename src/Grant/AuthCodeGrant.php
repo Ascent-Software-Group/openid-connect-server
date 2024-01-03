@@ -2,13 +2,14 @@
 
 namespace Idaas\OpenID\Grant;
 
-use DateTimeImmutable;
 use Idaas\OpenID\Entities\IdToken;
+use Idaas\OpenID\IdTokenEvent;
 use Idaas\OpenID\Repositories\AccessTokenRepositoryInterface;
 use Idaas\OpenID\Repositories\ClaimRepositoryInterface;
 use Idaas\OpenID\RequestTypes\AuthenticationRequest;
 use Idaas\OpenID\ResponseHandler;
-use Idaas\OpenID\Session;
+use Idaas\OpenID\ResponseTypes\BearerTokenResponse;
+use Idaas\OpenID\SessionInterface;
 use Idaas\OpenID\SessionInformation;
 use League\OAuth2\Server\Entities\UserEntityInterface;
 use League\OAuth2\Server\Exception\OAuthServerException;
@@ -16,6 +17,7 @@ use League\OAuth2\Server\Repositories\AuthCodeRepositoryInterface;
 use League\OAuth2\Server\Repositories\RefreshTokenRepositoryInterface;
 use League\OAuth2\Server\RequestTypes\AuthorizationRequest;
 use League\OAuth2\Server\ResponseTypes\ResponseTypeInterface;
+use LogicException;
 use Psr\Http\Message\ServerRequestInterface;
 use RuntimeException;
 
@@ -45,7 +47,7 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
         AuthCodeRepositoryInterface $authCodeRepository,
         RefreshTokenRepositoryInterface $refreshTokenRepository,
         ClaimRepositoryInterface $claimRepository,
-        Session $session,
+        SessionInterface $session,
         \DateInterval $authCodeTTL,
         \DateInterval $idTokenTTL
     ) {
@@ -59,7 +61,7 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
         
     }
 
-    public function getIdentifier()
+    public function getIdentifier(): string
     {
         return 'authorization_code_oidc';
     }
@@ -67,7 +69,7 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
     /**
      * {@inheritdoc}
      */
-    public function canRespondToAuthorizationRequest(ServerRequestInterface $request)
+    public function canRespondToAuthorizationRequest(ServerRequestInterface $request): bool
     {
         $result = parent::canRespondToAuthorizationRequest($request);
 
@@ -79,28 +81,38 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
         return $result;
     }
 
-    public function canRespondToAccessTokenRequest(ServerRequestInterface $request)
+    public function canRespondToAccessTokenRequest(ServerRequestInterface $request): bool
     {
         $requestParameters = (array) $request->getParsedBody();
-        //FIXME: for some reason, the unit test complete if the next three lines are removed
-        if (!in_array('code', array_keys($requestParameters))) {
+
+        // Don't try to handle code when it isn't even an authorization_code request
+        if (
+            !array_key_exists('grant_type', $requestParameters)
+            || $requestParameters['grant_type'] !== 'authorization_code'
+        ) {
             return false;
         }
 
-        $authCodePayload = json_decode($this->decrypt($requestParameters['code']));
+        if (!array_key_exists('code', $requestParameters)) {
+            return false;
+        }
 
-        return (in_array('openid', $authCodePayload->scopes) &&
-            array_key_exists('grant_type', $requestParameters) &&
-            $requestParameters['grant_type'] === 'authorization_code');
+        try {
+            $authCodePayload = json_decode($this->decrypt($requestParameters['code']));
+        } catch (LogicException $e) {
+            return false;
+        }
+
+        return isset($authCodePayload->scopes) && in_array('openid', $authCodePayload->scopes);
     }
 
     /**
      * {@inheritdoc}
      */
-    public function validateAuthorizationRequest(ServerRequestInterface $request)
+    public function validateAuthorizationRequest(ServerRequestInterface $request): AuthorizationRequest
     {
         $result = parent::validateAuthorizationRequest($request);
-        
+
         $redirectUri = $this->getQueryStringParameter(
             'redirect_uri',
             $request
@@ -157,7 +169,7 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
         ServerRequestInterface $request,
         ResponseTypeInterface $responseType,
         \DateInterval $accessTokenTTL
-    ) {
+    ): ResponseTypeInterface {
         /**
          * @var BearerTokenResponse $result
          */
@@ -170,14 +182,16 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
             $authCodePayload->claims = (array) $authCodePayload->claims;
         }
 
-        $idToken = new IdToken();
+        $issuedAt = new \DateTimeImmutable();
+        $idToken = $this->makeIdTokenInstance();
         $idToken->setIssuer($this->issuer);
         $idToken->setSubject($authCodePayload->user_id);
         $idToken->setAudience($authCodePayload->client_id);
-        $idToken->setExpiration(DateTimeImmutable::createFromMutable((new \DateTime())->add($this->idTokenTTL)));
-        $idToken->setIat(new \DateTimeImmutable());
+        $idToken->setExpiration($issuedAt->add($this->idTokenTTL));
+        $idToken->setIat($issuedAt);
+        $idToken->setIdentifier($this->generateUniqueIdentifier());
 
-        $idToken->setAuthTime(new \DateTime('@' . $authCodePayload->auth_time));
+        $idToken->setAuthTime(new \DateTimeImmutable('@' . $authCodePayload->auth_time));
         $idToken->setNonce($authCodePayload->nonce);
 
         if ($authCodePayload->claims) {
@@ -193,6 +207,7 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
         $user = (new $model)->findForPassport($authCodePayload->user_id);
 
         $idToken->addExtra('email', $user->email);
+
         /**
          * @var \Idaas\OpenID\SessionInformation
          */
@@ -202,15 +217,30 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
         $idToken->setAmr($sessionInformation->getAmr());
         $idToken->setAzp($sessionInformation->getAzp());
 
+        $this->getEmitter()->emit(new IdTokenEvent(IdTokenEvent::TOKEN_POPULATED, $idToken, $this));
+
         $result->setIdToken($idToken);
 
         return $result;
     }
 
+    protected function addMoreClaimsToIdToken(IdToken $idToken)
+    {
+        return $idToken;
+    }
+
+    /**
+     * @return IdToken
+     */
+    protected function makeIdTokenInstance()
+    {
+        return new IdToken();
+    }
+
     /**
      * {@inheritdoc}
      */
-    public function completeAuthorizationRequest(AuthorizationRequest $authorizationRequest)
+    public function completeAuthorizationRequest(AuthorizationRequest $authorizationRequest): ResponseTypeInterface
     {
         if (!($authorizationRequest instanceof AuthenticationRequest)) {
             throw OAuthServerException::invalidRequest('not possible');
@@ -236,11 +266,11 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
                 'auth_code_id'          => $authCode->getIdentifier(),
                 'scopes'                => $authCode->getScopes(),
                 'user_id'               => $authCode->getUserIdentifier(),
-                'expire_time'           => (new \DateTime())->add($this->authCodeTTL)->format('U'),
+                'expire_time'           => (new \DateTimeImmutable())->add($this->authCodeTTL)->format('U'),
                 'code_challenge'        => $authorizationRequest->getCodeChallenge(),
                 'code_challenge_method' => $authorizationRequest->getCodeChallengeMethod(),
 
-                // OIDC specifc parameters important for the id_token
+                // OIDC specific parameters important for the id_token
                 'nonce'                 => $authorizationRequest->getNonce(),
                 'max_age'               => $authorizationRequest->getMaxAge(),
                 'id_token_hint'         => $authorizationRequest->getIDTokenHint(),
