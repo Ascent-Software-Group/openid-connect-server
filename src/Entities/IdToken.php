@@ -13,6 +13,9 @@ class IdToken
     protected $issuer;
     protected $subject;
     protected $audience;
+    /**
+     * @var DateTimeImmutable
+     */
     protected $expiration;
     protected $iat; // Time at which the JWT was issued
     protected $authTime;
@@ -20,6 +23,7 @@ class IdToken
     protected $acr; // Authentication Context Class Reference
     protected $amr; // Authentication Methods References
     protected $azp; // Authorized party
+    protected $identifier;
 
     protected $extra = [];
 
@@ -31,7 +35,6 @@ class IdToken
 
     public function convertToJWT(CryptKey $privateKey)
     {
-        
         $config = Configuration::forAsymmetricSigner(
             new Sha256(),
             InMemory::plainText($privateKey->getKeyContents()),
@@ -46,12 +49,12 @@ class IdToken
             ->permittedFor($this->getAudience())
             ->expiresAt($this->getExpiration())
             ->issuedAt($this->getIat())
-            ->identifiedBy("123")
+            ->identifiedBy($this->identifier)
             ->withClaim('auth_time', $this->getAuthTime()->getTimestamp())
             ->withClaim('nonce', $this->getNonce());
 
         foreach ($this->extra as $key => $value) {
-            $token->withClaim($key, $value);
+            $token = $token->withClaim($key, $value);
         }
 
         return $token->getToken($config->signer(), $config->signingKey());
@@ -101,7 +104,7 @@ class IdToken
     /**
      * Get the value of expiration
      */
-    public function getExpiration() : DateTimeImmutable
+    public function getExpiration(): \DateTimeImmutable
     {
         return $this->expiration;
     }
@@ -131,7 +134,7 @@ class IdToken
      *
      * @return  self
      */
-    public function setIat(\DateTimeImmutable $iat)
+    public function setIat(\DateTimeInterface $iat)
     {
         $this->iat = $iat;
 
@@ -151,7 +154,7 @@ class IdToken
      *
      * @return  self
      */
-    public function setAuthTime(\DateTime $authTime)
+    public function setAuthTime(\DateTimeInterface $authTime)
     {
         $this->authTime = $authTime;
 
@@ -254,6 +257,24 @@ class IdToken
     public function setIssuer($issuer)
     {
         $this->issuer = $issuer;
+
+        return $this;
+    }
+
+    /**
+     * Get the value of identifiedBy
+     */
+    public function getIdentifier()
+    {
+        return $this->identifier;
+    }
+
+    /**
+     * Set the value of identifiedBy
+     */
+    public function setIdentifier($identifier)
+    {
+        $this->identifier = $identifier;
 
         return $this;
     }
