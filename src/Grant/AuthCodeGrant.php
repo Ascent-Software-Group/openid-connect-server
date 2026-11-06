@@ -4,18 +4,17 @@ namespace Idaas\OpenID\Grant;
 
 use Idaas\OpenID\Entities\IdToken;
 use Idaas\OpenID\IdTokenEvent;
-use Idaas\OpenID\Repositories\AccessTokenRepositoryInterface;
 use Idaas\OpenID\Repositories\ClaimRepositoryInterface;
 use Idaas\OpenID\RequestTypes\AuthenticationRequest;
 use Idaas\OpenID\ResponseHandler;
 use Idaas\OpenID\ResponseTypes\BearerTokenResponse;
-use Idaas\OpenID\SessionInterface;
 use Idaas\OpenID\SessionInformation;
+use Idaas\OpenID\SessionInterface;
 use League\OAuth2\Server\Entities\UserEntityInterface;
 use League\OAuth2\Server\Exception\OAuthServerException;
 use League\OAuth2\Server\Repositories\AuthCodeRepositoryInterface;
 use League\OAuth2\Server\Repositories\RefreshTokenRepositoryInterface;
-use League\OAuth2\Server\RequestTypes\AuthorizationRequest;
+use League\OAuth2\Server\RequestTypes\AuthorizationRequestInterface;
 use League\OAuth2\Server\ResponseTypes\ResponseTypeInterface;
 use LogicException;
 use Psr\Http\Message\ServerRequestInterface;
@@ -34,11 +33,6 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
     protected $claimRepository;
 
     /**
-     * @var AccessTokenRepositoryInterface
-     */
-    protected $accessTokenRepository;
-
-    /**
      * @param AuthCodeRepositoryInterface     $authCodeRepository
      * @param RefreshTokenRepositoryInterface $refreshTokenRepository
      * @param \DateInterval                   $authCodeTTL
@@ -49,16 +43,21 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
         ClaimRepositoryInterface $claimRepository,
         SessionInterface $session,
         \DateInterval $authCodeTTL,
-        \DateInterval $idTokenTTL
+        \DateInterval $idTokenTTL,
+        $disableRequireCodeChallengeForPublicClients = true
     ) {
         parent::__construct($authCodeRepository, $refreshTokenRepository, $authCodeTTL);
 
+        $this->defaultScope = '';
         $this->claimRepository = $claimRepository;
 
         $this->authCodeTTL = $authCodeTTL;
         $this->idTokenTTL = $idTokenTTL;
         $this->session = $session;
-        
+
+        if ($disableRequireCodeChallengeForPublicClients) {
+            $this->disableRequireCodeChallengeForPublicClients();
+        }
     }
 
     public function getIdentifier(): string
@@ -87,13 +86,13 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
 
         // Don't try to handle code when it isn't even an authorization_code request
         if (
-            !array_key_exists('grant_type', $requestParameters)
+            ! array_key_exists('grant_type', $requestParameters)
             || $requestParameters['grant_type'] !== 'authorization_code'
         ) {
             return false;
         }
 
-        if (!array_key_exists('code', $requestParameters)) {
+        if (! array_key_exists('code', $requestParameters)) {
             return false;
         }
 
@@ -109,7 +108,7 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
     /**
      * {@inheritdoc}
      */
-    public function validateAuthorizationRequest(ServerRequestInterface $request): AuthorizationRequest
+    public function validateAuthorizationRequest(ServerRequestInterface $request): AuthorizationRequestInterface
     {
         $result = parent::validateAuthorizationRequest($request);
 
@@ -118,7 +117,7 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
             $request
         );
 
-        //In constract with OAuth 2.0, in OIDC, the redirect_uri parameter is required
+        // In contrast with OAuth 2.0, in OIDC, the redirect_uri parameter is required
         if (is_null($redirectUri)) {
             throw OAuthServerException::invalidRequest('redirect_uri');
         }
@@ -130,7 +129,7 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
         // When max_age is used, the ID Token returned MUST include an auth_time Claim Value
         $maxAge = $this->getQueryStringParameter('max_age', $request);
 
-        if (!empty($maxAge) && !is_numeric($maxAge)) {
+        if (! empty($maxAge) && ! is_numeric($maxAge)) {
             throw OAuthServerException::invalidRequest('max_age', 'max_age must be numeric');
         }
 
@@ -140,13 +139,13 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
         $result->setResponseMode($this->getQueryStringParameter('response_mode', $request));
         $result->setResponseType($this->getQueryStringParameter('response_type', $request));
 
-        if (!empty($uiLocales = $this->getQueryStringParameter('ui_locales', $request))) {
+        if (! empty($uiLocales = $this->getQueryStringParameter('ui_locales', $request))) {
             $result->setUILocales(explode(' ', $uiLocales));
         }
 
         $result->setLoginHint($this->getQueryStringParameter('login_hint', $request));
 
-        if (!empty($acrValues = $this->getQueryStringParameter('acr_values', $request))) {
+        if (! empty($acrValues = $this->getQueryStringParameter('acr_values', $request))) {
             $result->setAcrValues(explode(' ', $acrValues));
         }
 
@@ -155,7 +154,7 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
             $this->claimRepository->claimsRequestToEntities($claims ? json_decode($claims, true) : null)
         );
 
-        if (!empty($display = $this->getQueryStringParameter('display', $request))) {
+        if (! empty($display = $this->getQueryStringParameter('display', $request))) {
             $result->setDisplay($display);
         }
 
@@ -191,7 +190,7 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
         $idToken->setIat($issuedAt);
         $idToken->setIdentifier($this->generateUniqueIdentifier());
 
-        $idToken->setAuthTime(new \DateTimeImmutable('@' . $authCodePayload->auth_time));
+        $idToken->setAuthTime(new \DateTimeImmutable('@'.$authCodePayload->auth_time));
         $idToken->setNonce($authCodePayload->nonce);
 
         if ($authCodePayload->claims) {
@@ -200,13 +199,7 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
             $this->accessTokenRepository->storeClaims($accessToken, $authCodePayload->claims);
         }
 
-        $provider = config('auth.guards.api.provider');
-        if (is_null($model = config('auth.providers.' . $provider . '.model'))) {
-            throw new RuntimeException('Unable to determine authentication model from configuration.');
-        }
-        $user = (new $model)->findForPassport($authCodePayload->user_id);
-
-        $idToken->addExtra('email', $user->email);
+        $idToken = $this->addMoreClaimsToIdToken($idToken);
 
         /**
          * @var \Idaas\OpenID\SessionInformation
@@ -226,6 +219,20 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
 
     protected function addMoreClaimsToIdToken(IdToken $idToken)
     {
+        if (! function_exists('config')) {
+            return $idToken;
+        }
+
+        $provider = config('auth.guards.api.provider');
+
+        if (is_null($model = config('auth.providers.'.$provider.'.model'))) {
+            throw new RuntimeException('Unable to determine authentication model from configuration.');
+        }
+
+        $user = (new $model)->findForPassport($idToken->getSubject());
+
+        $idToken->addExtra('email', $user->email);
+
         return $idToken;
     }
 
@@ -240,9 +247,9 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
     /**
      * {@inheritdoc}
      */
-    public function completeAuthorizationRequest(AuthorizationRequest $authorizationRequest): ResponseTypeInterface
+    public function completeAuthorizationRequest(AuthorizationRequestInterface $authorizationRequest): ResponseTypeInterface
     {
-        if (!($authorizationRequest instanceof AuthenticationRequest)) {
+        if (! ($authorizationRequest instanceof AuthenticationRequest)) {
             throw OAuthServerException::invalidRequest('not possible');
         }
 
@@ -250,34 +257,36 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
             throw new \LogicException('An instance of UserEntityInterface should be set on the AuthorizationRequest');
         }
 
+        $redirectUri = $authorizationRequest->getRedirectUri()
+            ?? $this->getClientRedirectUri($authorizationRequest->getClient());
+
         // The user approved the client, redirect them back with an auth code
         if ($authorizationRequest->isAuthorizationApproved() === true) {
             $authCode = $this->issueAuthCode(
                 $this->authCodeTTL,
                 $authorizationRequest->getClient(),
-                $authorizationRequest->getUser()->getIdentifier(),
+                (string) $authorizationRequest->getUser()->getIdentifier(),
                 $authorizationRequest->getRedirectUri(),
                 $authorizationRequest->getScopes()
             );
 
             $payload = [
-                'client_id'             => $authCode->getClient()->getIdentifier(),
-                'redirect_uri'          => $authCode->getRedirectUri(),
-                'auth_code_id'          => $authCode->getIdentifier(),
-                'scopes'                => $authCode->getScopes(),
-                'user_id'               => $authCode->getUserIdentifier(),
-                'expire_time'           => (new \DateTimeImmutable())->add($this->authCodeTTL)->format('U'),
-                'code_challenge'        => $authorizationRequest->getCodeChallenge(),
+                'client_id' => $authCode->getClient()->getIdentifier(),
+                'redirect_uri' => $authCode->getRedirectUri(),
+                'auth_code_id' => $authCode->getIdentifier(),
+                'scopes' => $authCode->getScopes(),
+                'user_id' => $authCode->getUserIdentifier(),
+                'expire_time' => (new \DateTimeImmutable())->add($this->authCodeTTL)->format('U'),
+                'code_challenge' => $authorizationRequest->getCodeChallenge(),
                 'code_challenge_method' => $authorizationRequest->getCodeChallengeMethod(),
 
                 // OIDC specific parameters important for the id_token
-                'nonce'                 => $authorizationRequest->getNonce(),
-                'max_age'               => $authorizationRequest->getMaxAge(),
-                'id_token_hint'         => $authorizationRequest->getIDTokenHint(),
-                'claims'                => $authorizationRequest->getClaims(),
-                'sessionInformation'    => (string) $authorizationRequest->getSessionInformation(),
-                'auth_time'             => $this->session->getAuthTime()->format('U')
-
+                'nonce' => $authorizationRequest->getNonce(),
+                'max_age' => $authorizationRequest->getMaxAge(),
+                'id_token_hint' => $authorizationRequest->getIDTokenHint(),
+                'claims' => $authorizationRequest->getClaims(),
+                'sessionInformation' => (string) $authorizationRequest->getSessionInformation(),
+                'auth_time' => $this->session->getAuthTime()->format('U'),
             ];
 
             $code = $this->encrypt(
@@ -287,17 +296,22 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
             );
 
             return (new ResponseHandler())->getResponse($authorizationRequest, $code);
-        } else {
-            // The user denied the client, redirect them back with an error
-            throw OAuthServerException::accessDenied(
-                'The user denied the request',
-                $this->makeRedirectUri(
-                    $authorizationRequest->getRedirectUri(),
-                    [
-                        'state' => $authorizationRequest->getState(),
-                    ]
-                )
-            );
         }
+
+        // The user denied the client, redirect them back with an error
+        throw OAuthServerException::accessDenied(
+            'The user denied the request',
+            $this->makeRedirectUri(
+                $redirectUri,
+                [
+                    'state' => $authorizationRequest->getState(),
+                ]
+            )
+        );
+    }
+
+    protected function createAuthorizationRequest(): AuthenticationRequest
+    {
+        return new AuthenticationRequest();
     }
 }

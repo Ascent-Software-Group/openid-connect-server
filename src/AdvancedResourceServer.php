@@ -22,7 +22,7 @@ class AdvancedResourceServer extends ResourceServer
      */
     public function __construct(
         AccessTokenRepositoryInterface $accessTokenRepository,
-        AuthorizationValidatorInterface $authorizationValidator = null
+        ?AuthorizationValidatorInterface $authorizationValidator = null
     ) {
         $this->accessTokenRepository = $accessTokenRepository;
         $this->authorizationValidator = $authorizationValidator;
@@ -31,7 +31,7 @@ class AdvancedResourceServer extends ResourceServer
     /**
      * @return AuthorizationValidatorInterface
      */
-    protected function getAuthorizationValidator()
+    protected function getAuthorizationValidator(): AuthorizationValidatorInterface
     {
         return $this->authorizationValidator;
     }
