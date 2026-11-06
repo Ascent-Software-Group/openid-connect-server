@@ -25,5 +25,5 @@ interface ClaimRepositoryInterface extends RepositoryInterface
      */
     public function getClaimsByScope(ScopeEntityInterface $scope): iterable;
 
-    public function claimsRequestToEntities(array $json = null);
+    public function claimsRequestToEntities(?array $json = null);
 }

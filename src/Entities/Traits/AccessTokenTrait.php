@@ -6,38 +6,46 @@ use Idaas\OpenID\Entities\ClaimEntityInterface;
 use Lcobucci\JWT\Configuration;
 use Lcobucci\JWT\Signer\Key\InMemory;
 use Lcobucci\JWT\Signer\Rsa\Sha256;
-use League\OAuth2\Server\CryptKey;
+use League\OAuth2\Server\CryptKeyInterface;
 use League\OAuth2\Server\Entities\Traits\AccessTokenTrait as LeagueAccessTokenTrait;
 
 trait AccessTokenTrait
 {
     use LeagueAccessTokenTrait {
-        LeagueAccessTokenTrait::convertToJWT as parentConvertToJWT;
+        LeagueAccessTokenTrait::setPrivateKey as parentSetPrivateKey;
+        LeagueAccessTokenTrait::toString as parentToString;
     }
 
-    private function convertToJWT(CryptKey $privateKey)
+    private CryptKeyInterface $openidPrivateKey;
+
+    public function setPrivateKey(CryptKeyInterface $privateKey): void
     {
+        $this->openidPrivateKey = $privateKey;
+
+        $this->parentSetPrivateKey($privateKey);
+    }
+
+    public function toString(): string
+    {
+        $privateKeyContents = $this->openidPrivateKey->getKeyContents();
+
         $config = Configuration::forAsymmetricSigner(
             new Sha256(),
-            InMemory::plainText($privateKey->getKeyContents(), $privateKey->getPassPhrase() ?? ''),
+            InMemory::plainText($privateKeyContents, $this->openidPrivateKey->getPassPhrase() ?? ''),
             InMemory::plainText('empty', 'empty')
         );
 
-        $builder = $config->builder();
-
-        return $builder
+        return $config->builder()
             ->permittedFor($this->getClient()->getIdentifier())
             ->identifiedBy($this->getIdentifier())
-            // issuedAt now receives a \DateTimeImmutable object instead of int.
             ->issuedAt(new \DateTimeImmutable())
-            // canOnlyBeUsedAfter now receives a \DateTimeImmutable object instead of int.
             ->canOnlyBeUsedAfter(new \DateTimeImmutable())
-            // expiresAt now receives a \DateTimeImmutable object instead of int.
             ->expiresAt($this->getExpiryDateTime())
-            ->relatedTo((string) $this->getUserIdentifier())
+            ->relatedTo((string) ($this->getUserIdentifier() ?? $this->getClient()->getIdentifier()))
             ->withClaim('scopes', $this->getScopes())
             ->withClaim('claims', $this->getClaims())
-            ->getToken($config->signer(), $config->signingKey());
+            ->getToken($config->signer(), $config->signingKey())
+            ->toString();
     }
 
     /**

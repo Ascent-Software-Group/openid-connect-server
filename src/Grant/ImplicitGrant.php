@@ -11,7 +11,7 @@ use Idaas\OpenID\SessionInterface;
 use League\OAuth2\Server\Entities\UserEntityInterface;
 use League\OAuth2\Server\Exception\OAuthServerException;
 use League\OAuth2\Server\Repositories\AccessTokenRepositoryInterface;
-use League\OAuth2\Server\RequestTypes\AuthorizationRequest;
+use League\OAuth2\Server\RequestTypes\AuthorizationRequestInterface;
 use League\OAuth2\Server\ResponseTypes\RedirectResponse;
 use League\OAuth2\Server\ResponseTypes\ResponseTypeInterface;
 use Psr\Http\Message\ServerRequestInterface;
@@ -56,6 +56,7 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
     ) {
         parent::__construct($accessTokenTTL, $queryDelimiter);
 
+        $this->defaultScope = '';
         $this->userRepository = $userRepository;
         $this->claimRepositoryInterface = $claimRepositoryInterface;
         $this->session = $session;
@@ -86,7 +87,7 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
         return $result && ($scopes && in_array('openid', explode(' ', $scopes)));
     }
 
-    public function validateAuthorizationRequest(ServerRequestInterface $request): AuthorizationRequest
+    public function validateAuthorizationRequest(ServerRequestInterface $request): AuthorizationRequestInterface
     {
         $result = parent::validateAuthorizationRequest($request);
 
@@ -143,7 +144,7 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
         return $result;
     }
 
-    public function completeAuthorizationRequest(AuthorizationRequest $authorizationRequest): ResponseTypeInterface
+    public function completeAuthorizationRequest(AuthorizationRequestInterface $authorizationRequest): ResponseTypeInterface
     {
         if (!($authorizationRequest instanceof AuthenticationRequest)) {
             throw OAuthServerException::invalidRequest('not possible');
@@ -153,14 +154,15 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
             throw new \LogicException('An instance of UserEntityInterface should be set on the AuthorizationRequest');
         }
 
-        $finalRedirectUri = $authorizationRequest->getRedirectUri();
+        $finalRedirectUri = $authorizationRequest->getRedirectUri()
+            ?? $this->getClientRedirectUri($authorizationRequest->getClient());
 
         // The user approved the client, redirect them back with an access token
         if ($authorizationRequest->isAuthorizationApproved() === true) {
             $accessToken = $this->issueAccessToken(
                 $this->accessTokenTTLCopy,
                 $authorizationRequest->getClient(),
-                $authorizationRequest->getUser()->getIdentifier(),
+                (string) $authorizationRequest->getUser()->getIdentifier(),
                 $authorizationRequest->getScopes()
             );
 
@@ -229,7 +231,7 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
                 $authorizationRequest->getResponseType() == 'token'
             ) {
                 $accessToken->setPrivateKey($this->privateKey);
-                $parameters['access_token'] = (string) $accessToken;
+                $parameters['access_token'] = $accessToken->toString();
                 $parameters['token_type'] = 'Bearer';
                 $parameters['expires_in'] = $accessToken->getExpiryDateTime()->getTimestamp() - (new \DateTime())->getTimestamp();
             }
@@ -261,12 +263,17 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
         );
     }
 
-    public function setAccessTokenRepository(AccessTokenRepositoryInterface $accessTokenRepository)
+    public function setAccessTokenRepository(AccessTokenRepositoryInterface $accessTokenRepository): void
     {
         if (!($accessTokenRepository instanceof \Idaas\OpenID\Repositories\AccessTokenRepositoryInterface)) {
             throw new \LogicException('The access token repository must be an instance of Idaas\OpenID\Repositories\AccessTokenRepositoryInterface');
         }
 
         $this->accessTokenRepository = $accessTokenRepository;
+    }
+
+    protected function createAuthorizationRequest(): AuthenticationRequest
+    {
+        return new AuthenticationRequest();
     }
 }
