@@ -186,7 +186,7 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
             if ($authorizationRequest->getResponseType() == 'id_token') {
                 $scopes = [];
 
-                foreach ($authorizationRequest->getScopes() as $scope) {
+                foreach ($finalizedScopes as $scope) {
                     $claims = $this->userRepository->getClaims(
                         $this->claimRepositoryInterface,
                         $scope
