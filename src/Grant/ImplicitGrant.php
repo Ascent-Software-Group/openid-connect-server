@@ -159,11 +159,18 @@ class ImplicitGrant extends \League\OAuth2\Server\Grant\ImplicitGrant
 
         // The user approved the client, redirect them back with an access token
         if ($authorizationRequest->isAuthorizationApproved() === true) {
+            $finalizedScopes = $this->scopeRepository->finalizeScopes(
+                $authorizationRequest->getScopes(),
+                $this->getIdentifier(),
+                $authorizationRequest->getClient(),
+                (string) $authorizationRequest->getUser()->getIdentifier()
+            );
+
             $accessToken = $this->issueAccessToken(
                 $this->accessTokenTTLCopy,
                 $authorizationRequest->getClient(),
                 (string) $authorizationRequest->getUser()->getIdentifier(),
-                $authorizationRequest->getScopes()
+                $finalizedScopes
             );
 
             $idToken = new IdToken();

@@ -4,6 +4,7 @@ namespace Idaas\OpenID;
 
 use Idaas\OpenID\Entities\IdToken;
 use League\Event\Event;
+use League\Event\HasEventName;
 use League\OAuth2\Server\Grant\GrantTypeInterface;
 use Psr\EventDispatcher\StoppableEventInterface;
 
@@ -22,7 +23,7 @@ if (class_exists(Event::class)) {
         }
     }
 } else {
-    class IdTokenEvent implements StoppableEventInterface
+    class IdTokenEvent implements StoppableEventInterface, HasEventName
     {
         use IdTokenEventTrait;
 
@@ -64,6 +65,11 @@ if (class_exists(Event::class)) {
          * @return string
          */
         public function getName()
+        {
+            return $this->name;
+        }
+
+        public function eventName(): string
         {
             return $this->name;
         }
