@@ -44,7 +44,7 @@ class AuthCodeGrant extends \League\OAuth2\Server\Grant\AuthCodeGrant
         SessionInterface $session,
         \DateInterval $authCodeTTL,
         \DateInterval $idTokenTTL,
-        $disableRequireCodeChallengeForPublicClients = true
+        $disableRequireCodeChallengeForPublicClients = false
     ) {
         parent::__construct($authCodeRepository, $refreshTokenRepository, $authCodeTTL);
 

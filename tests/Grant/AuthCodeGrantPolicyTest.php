@@ -29,15 +29,28 @@ use PHPUnit\Framework\TestCase;
 
 class AuthCodeGrantPolicyTest extends TestCase
 {
-    public function testPublicClientCanAuthorizeWithoutPkceByDefault()
+    public function testPublicClientMustSendACodeChallengeByDefault()
     {
         $grant = $this->grant();
         $grant->setClientRepository($this->clientRepository(false));
         $grant->setScopeRepository($this->scopeRepository());
 
-        $request = $this->authorizationRequest();
+        try {
+            $grant->validateAuthorizationRequest($this->authorizationRequest());
+            $this->fail('A public client without a code challenge was accepted.');
+        } catch (OAuthServerException $exception) {
+            $this->assertSame('invalid_request', $exception->getErrorType());
+            $this->assertSame('Code challenge must be provided for public clients', $exception->getHint());
+        }
+    }
 
-        $authorizationRequest = $grant->validateAuthorizationRequest($request);
+    public function testPublicClientCanAuthorizeWithoutPkceWhenTheRequirementIsDisabled()
+    {
+        $grant = $this->grant(true);
+        $grant->setClientRepository($this->clientRepository(false));
+        $grant->setScopeRepository($this->scopeRepository());
+
+        $authorizationRequest = $grant->validateAuthorizationRequest($this->authorizationRequest());
 
         $this->assertNull($authorizationRequest->getCodeChallenge());
     }
@@ -152,7 +165,7 @@ class AuthCodeGrantPolicyTest extends TestCase
         $this->assertSame('user@example.com', $claims['email']);
     }
 
-    protected function grant(): AuthCodeGrant
+    protected function grant(bool $disableRequireCodeChallengeForPublicClients = false): AuthCodeGrant
     {
         $claims = $this->getMockBuilder(ClaimRepositoryInterface::class)->getMock();
         $claims->method('claimsRequestToEntities')->willReturn([new ClaimEntity('sub')]);
@@ -163,7 +176,8 @@ class AuthCodeGrantPolicyTest extends TestCase
             $claims,
             new Session(),
             new DateInterval('PT10M'),
-            new DateInterval('PT10M')
+            new DateInterval('PT10M'),
+            $disableRequireCodeChallengeForPublicClients
         );
     }
 
