@@ -4,7 +4,7 @@ namespace Idaas\OpenID\Entities;
 
 use DateTimeImmutable;
 use Lcobucci\JWT\Signer\Rsa\Sha256;
-use League\OAuth2\Server\CryptKey;
+use League\OAuth2\Server\CryptKeyInterface;
 use Lcobucci\JWT\Configuration;
 use Lcobucci\JWT\Signer\Key\InMemory;
 
@@ -33,7 +33,7 @@ class IdToken
         $this->authTime = new DateTimeImmutable();
     }
 
-    public function convertToJWT(CryptKey $privateKey)
+    public function convertToJWT(CryptKeyInterface $privateKey)
     {
         $config = Configuration::forAsymmetricSigner(
             new Sha256(),
